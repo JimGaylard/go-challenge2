@@ -1,18 +1,18 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
 
 	"golang.org/x/crypto/nacl/box"
 )
+
+var nonce *[24]byte
 
 type secureWriter struct {
 	Writer io.Writer
@@ -49,41 +49,46 @@ func NewSecureWriter(w io.Writer, priv, pub *[32]byte) io.Writer {
 }
 
 type secureReader struct {
-	reader io.Reader
-	pub    *[32]byte
-	priv   *[32]byte
+	Reader io.Reader
+	Pub    *[32]byte
+	Priv   *[32]byte
 }
 
 func (r *secureReader) Read(p []byte) (n int, err error) {
-	return 0, nil
+	out := make([]byte, 32)
+
+	fmt.Printf("p: %s\n", string(p))
+	decrypted, done := box.Open(out, p, nonce, r.Pub, r.Priv)
+	if done == false {
+		fmt.Println("box.Open reports false\n")
+		fmt.Printf("out: %s\n", string(out))
+		fmt.Printf("decrypted: %s\n", string(decrypted))
+	}
+
+	n, err = r.Reader.Read(decrypted)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return
 }
 
 // NewSecureReader instantiates a new SecureReader
 func NewSecureReader(r io.Reader, priv, pub *[32]byte) io.Reader {
-	msg, err := ioutil.ReadAll(r)
-	if err != nil {
-		log.Fatal(err)
+	sr := &secureReader{
+		Reader: r,
+		Pub:    pub,
+		Priv:   priv,
 	}
 
-	nonce, err := newNonce()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	out := make([]byte, 1024)
-
-	decrypted, done := box.Open(out, msg, nonce, pub, priv)
-	if done != true {
-		log.Fatal("box.Open returned 'false'")
-	}
-	return bytes.NewReader(decrypted)
+	return sr
 }
 
 func newNonce() (*[24]byte, error) {
 	var nonce [24]byte
 	slice := nonce[:]
 
-	if _, err := rand.Read(slice); err != nil {
+	if _, err := rand.Reader.Read(slice); err != nil {
 		return nil, err
 	}
 	return &nonce, nil
