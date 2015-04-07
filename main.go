@@ -12,10 +12,11 @@ import (
 	"golang.org/x/crypto/nacl/box"
 )
 
-var nonce *[24]byte
+var nonce [24]byte
 
 type secureWriter struct {
 	Writer io.Writer
+	Nonce  *[24]byte
 	Pub    *[32]byte
 	Priv   *[32]byte
 }
@@ -23,9 +24,8 @@ type secureWriter struct {
 func (w *secureWriter) Write(p []byte) (n int, err error) {
 	nonce, err := newNonce()
 	if err != nil {
-		log.Fatal(err)
+		return 0, err
 	}
-
 	out := make([]byte, 32)
 
 	encrypted := box.Seal(out, p, nonce, w.Pub, w.Priv)
@@ -50,24 +50,26 @@ func NewSecureWriter(w io.Writer, priv, pub *[32]byte) io.Writer {
 
 type secureReader struct {
 	Reader io.Reader
+	Nonce  *[24]byte
 	Pub    *[32]byte
 	Priv   *[32]byte
 }
 
-func (r *secureReader) Read(p []byte) (n int, err error) {
-	out := make([]byte, 32)
-
-	fmt.Printf("p: %s\n", string(p))
-	decrypted, done := box.Open(out, p, nonce, r.Pub, r.Priv)
-	if done == false {
-		fmt.Println("box.Open reports false\n")
-		fmt.Printf("out: %s\n", string(out))
-		fmt.Printf("decrypted: %s\n", string(decrypted))
+func (r *secureReader) Read(p []byte) (n int, e error) {
+	nonce, err := newNonce()
+	if err != nil {
+		return 0, err
+	}
+	encrypted := make([]byte, 1024)
+	n, e = r.Reader.Read(encrypted)
+	if e != nil {
+		panic(e)
 	}
 
-	n, err = r.Reader.Read(decrypted)
-	if err != nil {
-		log.Fatal(err)
+	p, ok := box.Open(p, encrypted, nonce, r.Pub, r.Priv)
+	if !ok {
+		fmt.Println("box.Open reports false\n")
+		fmt.Printf("p: %s\n", string(p))
 	}
 
 	return
@@ -98,11 +100,54 @@ func newNonce() (*[24]byte, error) {
 // connects to the server, perform the handshake
 // and return a reader/writer.
 func Dial(addr string) (io.ReadWriteCloser, error) {
-	return nil, nil
+	rr := rand.Reader
+	pub, _, err := box.GenerateKey(rr)
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Fprint(conn, pub)
+
+	var serverPub [32]byte
+	n, err := conn.Read(serverPub[:])
+	if err != nil || n != 32 {
+		return nil, fmt.Errorf("n: %d", n)
+	}
+
+	return conn, nil
 }
 
 // Serve starts a secure echo server on the given listener.
 func Serve(l net.Listener) error {
+	rr := rand.Reader
+	_, _, err := box.GenerateKey(rr)
+	if err != nil {
+		return err
+	}
+
+	handshake, err := l.Accept()
+	if err != nil {
+		return err
+	}
+
+	var clientPub [32]byte
+	n, err := handshake.Read(clientPub[:])
+	if err != nil || n != 32 {
+		return fmt.Errorf("n: %d, error: %v", n, err)
+	}
+
+	for {
+		_, err := l.Accept()
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
